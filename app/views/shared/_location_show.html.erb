@@ -1,8 +1,12 @@
-<%# locals: (location:, events:, users:, stamps:, event_map_markers:, geo_layers: [], nearby_users: [], nearby_events: [], events_by_city: {}, events_by_country: {}, featured_cities: [], country_events: [], country: nil, state: nil, state_users: [], continent_events: [], continent: nil, emoji: nil) %>
+<%# locals: (location:, events:, users:, stamps:, event_map_markers:, geo_layers: [], nearby_users: [], nearby_events: [], cities: [], events_by_country: {}, country_events: [], country: nil, state: nil, state_users: [], continent_events: [], continent: nil, emoji: nil) %>
 
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
 
-<% title "Ruby Community in #{location.name}" %>
+<% if location.is_a?(OnlineLocation) %>
+  <% title "Online Ruby Events" %>
+<% else %>
+  <% title "Ruby Community in #{location.name}" %>
+<% end %>
 
 <% upcoming_event_count = events.count(&:upcoming?) %>
 <% upcoming_nearby_count = nearby_events.count { |n| n[:event].upcoming? } %>
@@ -24,15 +28,15 @@
 <%= render "shared/location_header",
       name: location.name,
       subtitle: location_subtitle(location),
-      flag_code: location.respond_to?(:alpha2) ? location.alpha2 : nil,
-      emoji: emoji,
+      flag_code: (location.respond_to?(:alpha2) && !location.is_a?(Continent)) ? location.alpha2 : nil,
+      emoji: location.is_a?(Continent) ? location.emoji_flag : emoji,
       stats: stats_text,
       location: location %>
 
 <%= render "shared/location_navigation",
       location: location,
       current_tab: "overview",
-      show_cities: events_by_city.any? || featured_cities.any? || location.is_a?(State),
+      show_cities: cities.any? || location.is_a?(State),
       show_countries: events_by_country.any?,
       show_states: location.is_a?(Country) && State.supported_country?(location),
       show_stamps: stamps.any? %>
@@ -48,16 +52,12 @@
         <%= render "shared/events_section",
               title: "Upcoming Events",
               events: upcoming_events,
-              view_all_path: location_upcoming_path(location),
-              view_all_count: upcoming_events.count,
               empty_message: "No upcoming events." %>
 
       <% elsif upcoming_nearby_events.any? %>
         <%= render "shared/events_section",
               title: "Upcoming Events",
               events: upcoming_events,
-              view_all_path: location_upcoming_path(location),
-              view_all_count: upcoming_events.count,
               empty_message: "No upcoming events in #{location.name}.",
               fallback_text: past_events.any? ? "View #{pluralize(past_events.count, "past event")} in #{location.name} →" : nil,
               fallback_path: past_events.any? ? location_past_path(location) : nil %>
@@ -83,7 +83,7 @@
         <%= render "shared/events_section",
               title: "Upcoming Events in #{country.name}",
               events: country_events,
-              view_all_path: country_upcoming_index_path(country),
+              view_all_path: country_path(country),
               view_all_count: country_events.count,
               empty_message: "No upcoming events in #{country.name}.",
               dimmed: true %>
@@ -93,7 +93,7 @@
         <%= render "shared/events_section",
               title: "Upcoming Events in #{continent.name}",
               events: continent_events,
-              view_all_path: continent_upcoming_index_path(continent),
+              view_all_path: continent_path(continent),
               view_all_count: continent_events.count,
               empty_message: "No upcoming events in #{continent.name}.",
               limit: 8,
@@ -107,9 +107,9 @@
             users: users,
             nearby_users: nearby_users,
             nearby_events: nearby_events,
-            cities: events_by_city,
+            cities: cities,
             countries: events_by_country,
-            show_cities: events_by_city.any?,
+            show_cities: cities.any?,
             show_countries: events_by_country.any?,
             event_map_markers: event_map_markers,
             geo_layers: geo_layers,

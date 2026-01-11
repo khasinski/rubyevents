@@ -18,7 +18,7 @@ class CountriesController < ApplicationController
       .grouped_by_country
       .to_h
 
-    @users_by_country = User.geocoded
+    @users_by_country = User.indexable.geocoded
       .group(:country_code)
       .count
       .transform_keys { |code| Country.find_by(country_code: code) }
@@ -36,20 +36,11 @@ class CountriesController < ApplicationController
     end
 
     @events = @country.events.includes(:series).order(start_date: :desc)
+    @cities = @country.cities.order(:name)
 
-    @featured_cities = FeaturedCity.where(country_code: @country.alpha2).order(:name)
-    @featured_city_names = @featured_cities.pluck(:city).map(&:downcase).to_set
-
-    @events_by_city = @events
-      .select { |event| event.location.present? }
-      .reject { |event| @featured_city_names.include?(event.city&.downcase) }
-      .group_by(&:location)
-      .sort_by { |city, _events| city }
-      .to_h
-
-    @users = @country.users.geocoded.order(talks_count: :desc)
+    @users = @country.users
     @stamps = @country.stamps
-    @continent = Continent.find_by_name(@country.continent)
+    @continent = @country.continent
     @location = @country
 
     upcoming_events = @events.upcoming.to_a
@@ -92,7 +83,8 @@ class CountriesController < ApplicationController
 
     return [] unless avg_lat && avg_lng
 
-    User.where.not(country_code: country.alpha2)
+    User.indexable
+      .where.not(country_code: country.alpha2)
       .where.not(latitude: nil)
       .near([avg_lat, avg_lng], 500, units: :km)
       .limit(20)

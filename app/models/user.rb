@@ -28,7 +28,7 @@
 #  settings             :json             not null
 #  slug                 :string           default(""), not null, uniquely indexed
 #  speakerdeck          :string           default(""), not null
-#  state                :string
+#  state_code           :string
 #  suspicion_cleared_at :datetime
 #  suspicion_marked_at  :datetime
 #  talks_count          :integer          default(0), not null
@@ -52,15 +52,20 @@
 # rubocop:enable Layout/LineLength
 class User < ApplicationRecord
   include ActionView::RecordIdentifier
+  include Geocodeable
   include Sluggable
   include Suggestable
-  include User::Searchable
 
+  include User::SQLiteFTSSearchable
+  include User::TypesenseSearchable
+
+  geocodeable :location
   configure_slug(attribute: :name, auto_suffix_on_collision: true)
 
   has_delegated_json :settings,
     feedback_enabled: true,
-    wrapped_public: false
+    wrapped_public: false,
+    searchable: true
 
   GITHUB_URL_PATTERN = %r{\A(https?://)?(www\.)?github\.com/}i
 
@@ -119,22 +124,10 @@ class User < ApplicationRecord
   has_one :contributor, dependent: :nullify
 
   has_object :profiles
-  has_object :location_info
   has_object :talk_recommender
   has_object :watched_talk_seeder
   has_object :speakerdeck_feed
   has_object :suspicion_detector
-
-  geocoded_by :location do |user, results|
-    if (result = results.first)
-      user.latitude = result.latitude
-      user.longitude = result.longitude
-      user.city = result.city
-      user.state = result.state_code
-      user.country_code = result.country_code
-      user.geocode_metadata = result.data.merge("geocoded_at" => Time.current.iso8601)
-    end
-  end
 
   validates :email, format: {with: URI::MailTo::EMAIL_REGEXP}, allow_blank: true
   validates :github_handle, presence: true, uniqueness: true, allow_blank: true
@@ -184,9 +177,6 @@ class User < ApplicationRecord
   # Seed watched talks for new users in development
   after_create :seed_development_watched_talks, if: -> { Rails.env.development? }
 
-  # Geocode location when it changes
-  after_commit :geocode_later, if: :location_previously_changed?
-
   # Speaker scopes
   scope :with_talks, -> { where.not(talks_count: 0) }
   scope :speakers, -> { where("talks_count > 0") }
@@ -198,6 +188,10 @@ class User < ApplicationRecord
   scope :not_marked_for_deletion, -> { where(marked_for_deletion: false) }
   scope :with_public_wrapped, -> { where("json_extract(settings, '$.wrapped_public') = ?", true) }
   scope :with_feedback_enabled, -> { where("json_extract(settings, '$.feedback_enabled') = ?", true) }
+  scope :searchable, -> { where("json_extract(settings, '$.searchable') = ?", true) }
+  scope :indexable, -> {
+    canonical.not_marked_for_deletion.where("talks_count > 0 OR json_extract(settings, '$.searchable') = ?", true)
+  }
   scope :with_location, -> { where.not(location: [nil, ""]) }
   scope :without_location, -> { where(location: [nil, ""]) }
   scope :preloaded, -> { includes(:connected_accounts) }
@@ -226,7 +220,7 @@ class User < ApplicationRecord
     user = find_by(name: name, marked_for_deletion: false)
     return user if user
 
-    alias_record = Alias.find_by(aliasable_type: "User", name: name)
+    alias_record = ::Alias.find_by(aliasable_type: "User", name: name)
     alias_record&.aliasable
   end
 
@@ -236,7 +230,7 @@ class User < ApplicationRecord
     user = find_by(slug: slug, marked_for_deletion: false)
     return user if user
 
-    alias_record = Alias.find_by(aliasable_type: "User", slug: slug)
+    alias_record = ::Alias.find_by(aliasable_type: "User", slug: slug)
     alias_record&.aliasable
   end
 
@@ -260,12 +254,23 @@ class User < ApplicationRecord
     Country.find_by(country_code: country_code)
   end
 
+  def to_location
+    @to_location ||= Location.from_record(self)
+  end
+
   def canonical_slug
     canonical&.slug
   end
 
   def verified?
     !suspicious? && connected_accounts.any? { |account| account.provider == "github" }
+  end
+
+  def indexable?
+    return false if canonical_id.present? || marked_for_deletion?
+    return true if talks_count > 0 # speakers are always searchable
+
+    searchable?
   end
 
   def ruby_passport_claimed?
@@ -458,9 +463,5 @@ class User < ApplicationRecord
 
   def seed_development_watched_talks
     watched_talk_seeder.seed_development_data
-  end
-
-  def geocode_later
-    GeocodeUserJob.perform_later(self)
   end
 end
